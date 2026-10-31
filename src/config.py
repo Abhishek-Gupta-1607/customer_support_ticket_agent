@@ -47,8 +47,8 @@ def load_settings() -> Settings:
         ),
         rag_collection=os.getenv("RAG_COLLECTION", "customer-support"),
         rag_top_k=int(os.getenv("RAG_TOP_K", "3")),
-        api_host=os.getenv("API_HOST", "127.0.0.1"),
-        api_port=int(os.getenv("API_PORT", "8000")),
+        api_host=os.getenv("API_HOST", "0.0.0.0"),
+        api_port=int(os.getenv("PORT") or os.getenv("API_PORT", "8000")),
         streamlit_host=os.getenv("STREAMLIT_HOST", "127.0.0.1"),
         streamlit_port=int(os.getenv("STREAMLIT_PORT", "8501")),
     )

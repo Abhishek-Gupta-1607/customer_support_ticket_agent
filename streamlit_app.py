@@ -11,7 +11,14 @@ import uuid
 import httpx
 import streamlit as st
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+# ── Resolve Backend URL ───────────────────────────────────────────────────
+API_BASE_URL = os.getenv("API_BASE_URL")
+if not API_BASE_URL:
+    try:
+        API_BASE_URL = st.secrets["API_BASE_URL"]
+    except Exception:
+        API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = API_BASE_URL.rstrip("/")
 
 # ── Page Configuration ────────────────────────────────────────────────────
 st.set_page_config(
@@ -112,7 +119,7 @@ if "prefill_prompt" not in st.session_state:
 # ── Health Check Helper ───────────────────────────────────────────────────
 def check_backend_health() -> bool:
     try:
-        with httpx.Client(timeout=1.5) as client:
+        with httpx.Client(timeout=4.0) as client:
             resp = client.get(f"{API_BASE_URL}/health")
             return resp.status_code == 200 and resp.json().get("status") == "ready"
     except Exception:
@@ -242,9 +249,9 @@ if prompt:
 
     # 2. Call FastAPI backend
     with st.chat_message("assistant", avatar="🎧"):
-        with st.spinner("Analyzing knowledge base & reasoning..."):
+        with st.spinner("Connecting to backend & reasoning..."):
             try:
-                with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)) as client:
+                with httpx.Client(timeout=httpx.Timeout(connect=60.0, read=90.0, write=20.0, pool=20.0)) as client:
                     resp = client.post(
                         f"{API_BASE_URL}/chat",
                         json={
