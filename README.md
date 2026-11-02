@@ -1,19 +1,22 @@
 # Customer Support Ticket Agent
 
-An intelligent, production-ready, conversational customer-support agent built with **FastAPI**, **Streamlit**, **LangChain**, **LangGraph**, **ChromaDB**, and open-source LLMs.
+An intelligent, production-ready, conversational customer-support agent built with **FastAPI**, **Streamlit**, **LangChain**, **LangGraph**, **ChromaDB**, and **Groq API**.
 
 ---
 
 ## 1. Project Overview
 
-The Customer Support Ticket Agent answers customer questions grounded strictly in supplied policy documents via Retrieval-Augmented Generation (RAG). When customers face unresolved issues or express intent to report a problem, the agent guides them through a structured, multi-turn information collection process, validates required ticket data, and creates an immutable support ticket via a mock ticket repository.
+The Customer Support Ticket Agent answers customer questions grounded strictly in supplied policy documents via Retrieval-Augmented Generation (RAG). When customers face unresolved issues or express intent to report a problem, the agent guides them through a structured, multi-turn information collection process, validates required ticket data, and creates an immutable support ticket via an in-memory ticket repository.
 
 ### Key Capabilities
 - **Grounded Question Answering (RAG):** Retrieves knowledge-base articles (shipping, payments, returns, accounts) and answers customer inquiries with source attribution (`sources: ["shipping.md"]`).
 - **Grounded Unknown Handling:** Never hallucinates company policies, deadlines, or fees. Inquiries outside the knowledge base are transparently flagged as unsupported.
 - **Multi-Turn Ticket Collection:** Identifies customer intent to report unresolved issues, asks targeted questions for missing fields step-by-step, validates inputs (email, category, summary), and commits tickets.
+- **Smart Question Interruption:** Customers can ask policy/troubleshooting questions even in the middle of a ticket creation flow; the agent answers via RAG without losing collected ticket state or getting trapped in a repetitive form loop.
 - **Session & Idempotency Protection:** Isolates conversations per session UUID, maintains full chat history, and guarantees duplicate requests in the same session return the existing ticket.
-- **Clean Decoupled Architecture:** Streamlit interacts exclusively through FastAPI HTTP endpoints; ChromaDB and LLM components run strictly on the backend.
+- **Primary LLM via Groq API:** Ultra-fast cloud LLM inference using Groq API (`openai/gpt-oss-20b` or Llama 3 models) with explicit rate-limit, timeout, and authentication error handling (no silent fallbacks).
+- **Local & Private Embeddings:** Embeddings are generated locally using HuggingFace `sentence-transformers/all-MiniLM-L6-v2` and stored in ChromaDB; customer document embeddings are never sent to external LLMs.
+- **Modern Streamlit UI:** Redesigned interface featuring interactive FAQ pill buttons, live system health monitoring, source badge chips, official ticket confirmation cards, and a sidebar Ticket Status Lookup tool.
 
 ---
 
@@ -22,7 +25,10 @@ The Customer Support Ticket Agent answers customer questions grounded strictly i
 ```text
 +-------------------------------------------------------------+
 |                      Streamlit Frontend                     |
-|         (Chat UI, Session State, Sources & Ticket ID)       |
+|  - Modern Chat UI with Customer 👤 & Agent 🎧 Avatars       |
+|  - Quick-Question FAQ Pills & Source Chips                  |
+|  - Live Health Indicator & Sidebar Ticket Lookup Tool       |
+|  - One-Click "New Conversation" Session Reset               |
 +-------------------------------------------------------------+
                                |
                         HTTP (JSON REST)
@@ -55,12 +61,13 @@ The Customer Support Ticket Agent answers customer questions grounded strictly i
 |                                v                            |
 |                              [END]                          |
 +-------------------------------------------------------------+
-        |                                       |
-        v                                       v
-+-----------------------+           +-----------------------+
-|  KnowledgeRetriever   |           |    TicketRepository   |
-| (ChromaDB + MiniLM)   |           | (Session Idempotent)  |
-+-----------------------+           +-----------------------+
+        |                       |                   |
+        v                       v                   v
++-------------------+   +---------------+   +-------------------+
+| KnowledgeRetriever|   |    Groq API   |   |  TicketRepository |
+| (ChromaDB + Cosine|   | (ChatOpenAI   |   | (Session-bound    |
+|  + Local MiniLM)  |   |  gpt-oss-20b) |   |  Idempotent Store)|
++-------------------+   +---------------+   +-------------------+
 ```
 
 ---
@@ -69,11 +76,11 @@ The Customer Support Ticket Agent answers customer questions grounded strictly i
 
 - **Language:** Python 3.11+
 - **API Framework:** FastAPI, Uvicorn, Pydantic v2
-- **UI Framework:** Streamlit
+- **UI Framework:** Streamlit (Custom CSS, responsive components)
 - **LLM Orchestration:** LangChain, LangGraph
-- **Vector Database:** ChromaDB (persistent with Cosine distance metric)
-- **Embeddings:** HuggingFace Sentence Transformers (`sentence-transformers/all-MiniLM-L6-v2`)
-- **LLM Integration:** Groq API (`ChatOpenAI` adapter, model `openai/gpt-oss-20b`, base URL `https://api.groq.com/openai/v1`)
+- **LLM Provider:** Groq API (`https://api.groq.com/openai/v1`, model: `openai/gpt-oss-20b`)
+- **Vector Database:** ChromaDB (persistent with Cosine distance metric `hnsw:space: cosine`)
+- **Embeddings:** HuggingFace Sentence Transformers (`sentence-transformers/all-MiniLM-L6-v2`) with PyTorch memory optimizations
 - **Testing:** Pytest, Pytest-Asyncio, HTTPX
 
 ---
@@ -82,11 +89,12 @@ The Customer Support Ticket Agent answers customer questions grounded strictly i
 
 ```text
 customer_support_ticket_agent/
-├── .env.example                # Environment template
-├── .gitignore                  # Git ignore rules
+├── .env.example                # Documented environment variable template
+├── .gitignore                  # Git rules (protects .env, .venv, .data)
 ├── README.md                   # Complete architectural and setup guide
 ├── requirements.txt            # Python dependencies
-├── streamlit_app.py            # Streamlit customer-facing chat UI
+├── run.py                      # Production entrypoint with dynamic port binding ($PORT)
+├── streamlit_app.py            # Modern Streamlit customer-facing chat UI
 ├── knowledge_base/             # Customer support policy Markdown documents
 │   ├── accounts.md             # Account security & password policies
 │   ├── payments.md             # Charge & pending payment policies
@@ -94,22 +102,22 @@ customer_support_ticket_agent/
 │   └── shipping.md             # Standard & express delivery timeframes
 ├── src/
 │   ├── __init__.py
-│   ├── config.py               # Environment configuration dataclass & loader
-│   ├── models.py               # Pydantic schemas (ChatRequest, ChatResponse, Ticket)
+│   ├── config.py               # Environment configuration dataclass & loader (Groq defaults)
+│   ├── models.py               # Pydantic schemas (ChatRequest, ChatResponse, TicketCreate, Ticket)
 │   ├── pipeline.py             # Top-level SupportPipeline coordinator
 │   ├── api/
 │   │   ├── __init__.py
-│   │   └── server.py           # FastAPI application endpoints & lifespan
+│   │   └── server.py           # FastAPI application endpoints & lifespan management
 │   ├── llm/
 │   │   ├── __init__.py
-│   │   ├── client.py           # ChatOpenAI adapter binding
+│   │   ├── client.py           # ChatOpenAI Groq binding & handle_llm_exception
 │   │   ├── prompts.py          # Grounding system prompt & answer templates
 │   │   └── workflow.py         # StateGraph agent workflow (retrieve, decide, answer, ticket)
 │   ├── rag/
 │   │   ├── __init__.py
 │   │   ├── document_loader.py  # Markdown loader & recursive character text splitter
-│   │   ├── embeddings.py       # HuggingFace sentence transformer adapter
-│   │   └── retriever.py        # KnowledgeRetriever with deduplication & stable IDs
+│   │   ├── embeddings.py       # Memory-optimized HuggingFace sentence transformer adapter
+│   │   └── retriever.py        # KnowledgeRetriever with deduplication & SHA-256 stable IDs
 │   ├── sessions/
 │   │   ├── __init__.py
 │   │   └── store.py            # ConversationState & SessionStore
@@ -123,6 +131,7 @@ customer_support_ticket_agent/
     ├── __init__.py
     ├── conftest.py             # Pytest fixtures
     ├── test_all.py             # Complete integrated test suite
+    ├── test_groq_integration.py# Groq API configuration, rate limits, and auth tests
     ├── test_pipeline.py        # Pipeline lifecycle & turn execution tests
     ├── test_rag.py             # Document loading, embeddings, and retrieval tests
     ├── test_scenarios.py       # Verification for all 8 customer demonstration scenarios
@@ -137,6 +146,7 @@ customer_support_ticket_agent/
 ### Prerequisites
 - Python 3.11, 3.12, or 3.13 installed
 - Git
+- A Groq API key from [console.groq.com/keys](https://console.groq.com/keys)
 
 ### 1. Clone & Create Virtual Environment
 
@@ -167,47 +177,68 @@ The application is fully environment-driven via `.env`.
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `LLM_BASE_URL` | `https://api.groq.com/openai/v1` | Groq OpenAI-compatible endpoint |
-| `GROQ_API_KEY` | *(Set in `.env`)* | Groq API Key (never committed) |
-| `LLM_MODEL` | `openai/gpt-oss-20b` | Model identifier on Groq |
+| `GROQ_API_KEY` | *(Set in `.env`)* | Groq API Key (never committed to git) |
+| `LLM_MODEL` | `openai/gpt-oss-20b` | Model identifier on Groq (or `llama-3.3-70b-versatile`) |
 | `API_BASE_URL` | `http://localhost:8000` | Backend API URL used by Streamlit |
-| `API_HOST` | `127.0.0.1` | Host interface for FastAPI |
-| `API_PORT` | `8000` | Port for FastAPI |
+| `API_HOST` | `0.0.0.0` | Host interface for FastAPI |
+| `API_PORT` | `8000` | Default port for FastAPI (overridden by cloud `$PORT`) |
 | `STREAMLIT_HOST` | `127.0.0.1` | Host interface for Streamlit |
 | `STREAMLIT_PORT` | `8501` | Port for Streamlit |
 | `VECTOR_DB_PATH` | `.data/vector_db` | Persistent storage directory for ChromaDB |
-| `EMBEDDING_MODEL`| `sentence-transformers/all-MiniLM-L6-v2` | HuggingFace embedding model (local) |
+| `EMBEDDING_MODEL`| `sentence-transformers/all-MiniLM-L6-v2` | HuggingFace embedding model (local CPU) |
 | `RAG_COLLECTION` | `customer-support` | ChromaDB collection name |
 | `RAG_TOP_K` | `3` | Maximum retrieved chunks per query |
 
-### Running with Groq API
-1. Obtain an API key from [Groq Console](https://console.groq.com/keys).
-2. Set your API key in `.env`:
-   ```bash
+### Groq API Key Setup
+1. Open the [`.env`](file:///.env) file.
+2. Set your Groq API key on line 3:
+   ```ini
    GROQ_API_KEY=gsk_your_actual_key_here
    ```
-3. The application communicates with Groq at `https://api.groq.com/openai/v1` using model `openai/gpt-oss-20b`.
-4. Rate limits (HTTP 429), authentication failures (HTTP 401), timeouts, and service outages are handled explicitly and surfaced as friendly customer messages without silent fallback.
-5. Embedding generation is kept local via HuggingFace `sentence-transformers/all-MiniLM-L6-v2` and persistent ChromaDB—embedding requests are **never** routed to Groq.
+3. Save the file. The key is protected by `.gitignore` and will never be pushed to version control.
+
+### Groq Resilience & Error Handling
+- **Rate Limits (HTTP 429):** Explicitly intercepted and presented as `"Groq API rate limit exceeded. Please wait a moment and try again."`
+- **Authentication (HTTP 401):** Intercepted and surfaced as `"Groq API authentication failed. Please verify that GROQ_API_KEY is set and valid."`
+- **Timeouts & Outages:** Intercepted and surfaced with clear status messages without silent fallback to different providers.
 
 ---
 
 ## 7. Running the Application
 
-### Step 1: Start the FastAPI Backend
+### Option A: Local Execution (Standard)
+
+#### Step 1: Start the FastAPI Backend
 ```bash
 source .venv/bin/activate
-uvicorn src.api.server:app --reload --host 127.0.0.1 --port 8000
+python run.py
 ```
-- API interactive docs: `http://localhost:8000/docs`
+*(Or: `uvicorn src.api.server:app --reload --host 127.0.0.1 --port 8000`)*
+- API interactive Swagger documentation: `http://localhost:8000/docs`
 - Health check: `http://localhost:8000/health`
 
-### Step 2: Start the Streamlit Frontend
-In a separate terminal:
+#### Step 2: Start the Streamlit Frontend
+In a second terminal window:
 ```bash
 source .venv/bin/activate
 streamlit run streamlit_app.py --server.address 127.0.0.1 --server.port 8501
 ```
-Open `http://localhost:8501` in your browser.
+Open **`http://localhost:8501`** in your browser.
+
+---
+
+### Option B: Cloud & Remote Deployment
+
+- **Production Entrypoint:** [`run.py`](file:///run.py) automatically inspects the environment for cloud-provided `$PORT` (e.g. Render, Railway, Hugging Face) and binds to `0.0.0.0`.
+- **Streamlit Cloud Deployment:**
+  - In Streamlit Cloud **Advanced Settings > Secrets**, set:
+    ```toml
+    API_BASE_URL = "https://your-backend-url.onrender.com"
+    ```
+  - Streamlit connects to your live backend and renders full chat interactions with live health status monitoring.
+- **Local Tunneling (Instant Demo):**
+  - Expose your local backend via `ngrok http 8000`.
+  - Put the generated `https://xxxx.ngrok-free.app` URL into Streamlit Cloud Secrets.
 
 ---
 
@@ -248,9 +279,9 @@ Retrieves an existing ticket directly from the repository.
   {
     "customer_name": "Rahul Sharma",
     "customer_email": "rahul@example.com",
-    "issue_description": "Payment charged twice",
+    "issue_description": "Payment was charged twice",
     "category": "payment",
-    "summary": "Payment issue: Payment charged twice",
+    "summary": "Payment issue: Payment was charged twice",
     "ticket_id": "CST-2026-0001",
     "status": "open",
     "created_at": "2026-10-31T14:15:00Z"
@@ -269,13 +300,18 @@ source .venv/bin/activate
 pytest -q
 ```
 
-All 92 automated tests pass across:
-- RAG document loading, splitting, deduplication, and search
-- LangGraph decision routing, grounding, and unknown-question handling
-- Multi-turn ticket collection and Pydantic validation
-- Session isolation and duplicate ticket prevention
-- FastAPI endpoints and error code mappings
-- Streamlit request/response contracts
+**Results:**
+```text
+102 passed, 1 warning in 4.05s
+```
+
+All 102 automated tests pass across:
+- **RAG:** Document loading, recursive splitting, metadata preservation, ChromaDB idempotency, cosine similarity scoring, and relevance threshold filtering.
+- **Groq Integration:** Environment variable loading, Groq chat model creation, rate limit (429) propagation, authentication error (401) handling, and CPU embedding verification.
+- **LangGraph Agent Workflow:** Intent classification, grounded question answering, smart question interruption mid-ticket, multi-turn information collection, and ticket creation.
+- **Ticket System:** Customer details validation, email formatting, category enforcement, unique ID generation, and session duplicate prevention.
+- **FastAPI Endpoints:** `GET /health`, `POST /chat`, `GET /tickets/{ticket_id}`, invalid payload validation (422), missing tickets (404), and upstream failure mapping (502).
+- **Streamlit Contracts:** JSON payload contract integrity, UUID stability, and source/ticket ID rendering contracts.
 
 ---
 
@@ -286,16 +322,17 @@ All 92 automated tests pass across:
 | **1. Shipping Question** | "How long does standard shipping take?" | Answers "three to five business days" grounded in `shipping.md`; displays source `shipping.md`. |
 | **2. Payment Question** | "I have a pending payment. What does it mean?" | Explains authorization hold grounded in `payments.md`; displays source `payments.md`. |
 | **3. Unknown Question** | "Do you offer free international installation?" | Explicitly states the knowledge base does not contain this information; does not fabricate policies. |
-| **4. Ticket Creation** | "My payment was charged twice. I want to report this." | Detects ticket intent, captures problem description, and asks for customer's name. |
+| **4. Ticket Creation** | "My payment was charged twice. I want to report this." | Detects ticket intent, captures problem description, and begins multi-turn collection by asking for full name. |
 | **5. Multi-turn Ticket Flow** | Customer provides Name -> Email -> Issue -> Category | Collects all 4 fields over consecutive turns, validates email/category, creates ticket `CST-2026-XXXX`. |
-| **6. Ticket Retrieval** | `GET /tickets/CST-2026-0001` | Returns saved ticket details, timestamps, and status "open". |
+| **6. Ticket Retrieval** | `GET /tickets/CST-2026-0001` | Returns saved ticket details, timestamps, and status "open" (also viewable via Streamlit sidebar lookup tool). |
 | **7. Duplicate Request** | Repeats ticket request in same session | Reuses existing `ticket_id`; creates no duplicate record. |
 | **8. Failure Handling** | Backend or LLM endpoint unavailable | Displays friendly error without discarding earlier conversation messages. |
 
 ---
 
-## 11. Troubleshooting & Limitations
+## 11. Troubleshooting & Platform Notes
 
-- **HuggingFace Hub Offline:** Set `HF_HUB_OFFLINE=1` if running in network-restricted environments where sentence-transformer weights are pre-cached.
-- **Port Conflicts:** Modify `API_PORT` (e.g. 8001) or `STREAMLIT_PORT` (e.g. 8502) in `.env` if defaults are in use.
+- **HuggingFace Hub Offline:** Set `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` when running in network-restricted environments where sentence-transformer weights are pre-cached.
+- **Port Conflicts:** Modify `API_PORT` (e.g. 8001) or `STREAMLIT_PORT` (e.g. 8502) in `.env` if local defaults are in use.
 - **Ticket Store Persistence:** The mock ticket repository is in-memory by design specification. Tickets reset on process restarts; for permanent production persistence, bind to PostgreSQL or SQLite.
+- **Memory Optimization for Cloud Tiers:** `src/rag/embeddings.py` sets `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, and `torch.set_num_threads(1)` to minimize memory allocation and prevent out-of-memory errors on constrained cloud environments.
